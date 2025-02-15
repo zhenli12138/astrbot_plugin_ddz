@@ -7,7 +7,7 @@ from pathlib import Path
 import os
 from queue import Queue
 import random
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 import time
 from collections import defaultdict
 '''
@@ -57,6 +57,53 @@ class MyPlugin(Star):
         img = self.generate_menu()
         yield event.make_result().message("斗地主游戏菜单：").file_image(img)
 
+    @filter.command("退出游戏")
+    @event_message_type(EventMessageType.GROUP_MESSAGE)
+    async def exit_game_cmd(self,event: AstrMessageEvent):
+        user_id = event.get_sender_id()
+        group_id = event.get_group_id()
+        room_id = group_id
+        players = self.rooms[room_id]['players']
+        is_host = players[0] == user_id
+        if not room_id:
+            yield event.plain_result("该群没有游戏房间！")
+            return
+        if user_id not in players:
+            yield event.plain_result("你没在游戏房间！")
+            return
+        # 处理不同退出场景
+        if is_host:
+            # 房主退出或强制退出，直接解散房间
+            # 保存游戏状态（如果需要）
+            #if game and game.game_state != "ended":
+                #await cls._save_game_state(game)
+            # 通知所有玩家
+            exit_type = "房主" if is_host else "管理员"
+            # 清理房间数据
+            for p in players:
+                self.player_rooms.pop(p, None)
+            self.rooms.pop(room_id, None)
+            yield event.plain_result(f"{exit_type}已解散房间，游戏结束！")
+            return
+        else:
+            # 普通玩家退出
+            # 检查游戏状态
+            if self.rooms[room_id]['state'] == "playing":
+                yield event.plain_result("游戏进行中无法退出！")
+                return
+            # 从房间移除玩家
+            self.rooms[room_id]['players'].remove(user_id)
+            self.player_rooms.pop(user_id)
+            if user_id in self.rooms[room_id]['game']['hands']:
+                self.rooms[room_id]['game']['hands'].pop(user_id)
+            yield event.plain_result(f"玩家 {user_id} 已退出房间")
+            yield event.plain_result(f"当前人数：{len(self.rooms[room_id]['players'])}")
+            # 如果房间为空，清理房间
+            if not players:
+                self.rooms.pop(room_id)
+                yield event.plain_result(f"已解散房间，游戏结束！")
+                return
+            return
     @filter.command("创建房间")
     @event_message_type(EventMessageType.GROUP_MESSAGE)
     async def create_room_cmd(self,event: AstrMessageEvent):
@@ -171,8 +218,10 @@ class MyPlugin(Star):
     @event_message_type(EventMessageType.PRIVATE_MESSAGE)
     async def lookcard(self,event: AstrMessageEvent):
         user_id = event.get_sender_id()
-        group_id = event.get_group_id()
-        room_id = group_id
+        room_id = self.player_rooms.get(user_id)
+        if not room_id:
+            yield event.plain_result(f"您还没有加入任何游戏房间")
+            return
         players = self.rooms[room_id]['players']
         if user_id in players:
             idx = players.index(user_id)
@@ -180,6 +229,7 @@ class MyPlugin(Star):
             message_chain = MessageChain().message("您的手牌为：").file_image(hand_img)
             logger.info(self.rooms[room_id]['game']['hands'][user_id])
             await event.send(message_chain)
+
 
     @filter.command('不抢')
     @event_message_type(EventMessageType.GROUP_MESSAGE)
@@ -464,11 +514,11 @@ class MyPlugin(Star):
             "/创建房间",
             "/加入房间",
             "/开始游戏",
-            "/明牌操作",
-            "/不抢",
+            "/明牌操作（没做这功能）",
             "/抢地主",
             "/出牌 [牌组]",
-            "/查看手牌",
+            "/pass（不出牌）",
+            "/查看手牌（私聊指令，要看的时候发指令刷新图片）",
             "/退出游戏"
         ]
         y = 50
@@ -486,8 +536,14 @@ class MyPlugin(Star):
     def generate_hand_image(self, cards,idx):
         card_width = 80
         card_height = 120
-        spacing = 90
-        img = Image.new('RGB', (card_width + (len(cards) - 1) * spacing, card_height), (56, 94, 15))
+        spacing = 50
+        img = Image.new('RGB', (max(card_width + (len(cards) - 1) * spacing, 500), 200), (56, 94, 15))
+        d = ImageDraw.Draw(img)
+        text = "【斗地主手牌】"
+        bbox = d.textbbox((0, 0), text, font=ImageFont.truetype('msyh.ttc', 50))
+        text_width = bbox[2] - bbox[0]  # 文本宽度
+        x = (img.width - text_width) / 2  # 水平居中
+        d.text((x, 0), text, fill=(0, 0, 0), font=ImageFont.truetype('msyh.ttc', 50))
         for i, card in enumerate(cards):
             if card in ['BJ', 'RJ']:
                 color = (0, 0, 0) if card == 'BJ' else (255, 0, 0)
@@ -507,11 +563,12 @@ class MyPlugin(Star):
                 value = card[1:]
                 card_img = Image.new('RGB', (card_width, card_height), (255, 255, 255))
                 d = ImageDraw.Draw(card_img)
-                d.text((50, 60), suit, fill=Poker.colors[suit], font=ImageFont.truetype('arial.ttf', 50))
+                d.text((5, 60), suit, fill=Poker.colors[suit], font=ImageFont.truetype('arial.ttf', 50))
                 d.text((5, 0), value, fill=(0, 0, 0), font=ImageFont.truetype('msyh.ttc', 40))
-
-            img.paste(card_img, (i * spacing, 0))
-
+            border_width = 1
+            border_color = (0, 0, 0)  # 红色边框
+            bordered_img = ImageOps.expand(card_img, border=border_width, fill=border_color)
+            img.paste(bordered_img, (i * spacing, 80))
 
         output_path = f"./data/plugins/astrbot_plugin_ddz/pic{idx}.png"
         img.save(output_path, format='PNG')
@@ -551,40 +608,6 @@ class MyPlugin(Star):
             yield event.chain_result(chain2)
     '''---------------------------------------------------'''
 # ========== 牌型验证模块 ==========
-    def parse_cards(self, cards_str, hand):
-        """将输入的字符串转换为标准化牌型"""
-        card_map = {
-            'bj': 'BJ', 'rj': 'RJ',
-            'j': 'J', 'q': 'Q', 'k': 'K', 'a': 'A',
-            '2': '2', '3': '3', '4': '4', '5': '5',
-            '6': '6', '7': '7', '8': '8', '9': '9',
-            '10': '10'
-        }
-        cards = []
-        for c in cards_str.lower().split():
-            if c in ['bj', 'rj']:
-                cards.append(c.upper())
-            else:
-                suit = ''
-                if c.startswith(('♠', 's')):
-                    suit = '♠'
-                elif c.startswith(('♥', 'h')):
-                    suit = '♥'
-                elif c.startswith(('♦', 'd')):
-                    suit = '♦'
-                elif c.startswith(('♣', 'c')):
-                    suit = '♣'
-                value = card_map.get(c.lstrip('♠♥♦♣shdclrt').lower())
-                if not value: return None
-                cards.append(f"{suit}{value}")
-
-        # 验证是否全部在手牌中
-        temp_hand = hand.copy()
-        for c in cards:
-            if c not in temp_hand:
-                return None
-            temp_hand.remove(c)
-        return cards
 
 
     def validate_type(self, cards):
@@ -679,6 +702,117 @@ class MyPlugin(Star):
         return new_type[1] > last_type[1]
 
 
+    def parse_cards(self, input_str, hand):
+        """
+        解析简写输入并自动匹配花色
+        示例输入："2223" -> 自动选择三个2和一个3的合法组合
+        """
+        # 转换输入为牌值列表
+        card_values = self.convert_input(input_str)
+        if not card_values:
+            return None
+
+        # 统计需求牌值
+        required = defaultdict(int)
+        for v in card_values:
+            required[v] += 1
+
+        # 获取手牌按牌值分类的候选牌
+        candidates = self.group_by_value(hand)
+
+        # 查找可能的组合
+        matched = []
+        for value, count in required.items():
+            if value not in candidates or len(candidates[value]) < count:
+                return None  # 牌值数量不足
+            matched.append(candidates[value][:count])  # 优先取前面的花色
+
+        # 展开组合并排序
+        result = [card for group in matched for card in group]
+        return sorted(result, key=self.card_value)
+
+    def convert_input(self, input_str):
+        """将用户输入转换为标准牌值列表"""
+        # 转换映射表
+        convert_map = {
+            'bj': 'BJ', 'rj': 'RJ',
+            'j': 'J', 'q': 'Q', 'k': 'K', 'a': 'A',
+            '0': '10', '1': '10',  # 处理10的特殊输入
+            '2': '2', '3': '3', '4': '4', '5': '5',
+            '6': '6', '7': '7', '8': '8', '9': '9'
+        }
+
+        values = []
+        i = 0
+        while i < len(input_str):
+            char = input_str[i].lower()
+
+            # 处理10的情况
+            if char == '1' and i + 1 < len(input_str) and input_str[i + 1] in ('0', 'o'):
+                values.append('10')
+                i += 2
+                continue
+            if char == '0':
+                values.append('10')
+                i += 1
+                continue
+
+            # 处理特殊牌
+            if char in ('b', 'r') and i + 1 < len(input_str):
+                next_char = input_str[i + 1].lower()
+                if char == 'b' and next_char == 'j':
+                    values.append('BJ')
+                    i += 2
+                    continue
+                if char == 'r' and next_char == 'j':
+                    values.append('RJ')
+                    i += 2
+                    continue
+
+            # 普通牌值转换
+            converted = convert_map.get(char)
+            if not converted:
+                return None
+            values.append(converted)
+            i += 1
+
+        return values
+
+    def group_by_value(self, hand):
+        """将手牌按牌值分组"""
+        groups = defaultdict(list)
+        for card in hand:
+            if card in ['BJ', 'RJ']:
+                value = card
+            value = card[1:] if card[0] in Poker.suits else card
+            groups[value].append(card)
+        # 按花色排序：♠ > ♥ > ♦ > ♣
+        for v in groups.values():
+            v.sort(key=lambda x: Poker.suits.index(x[0]) if x[0] in Poker.suits else 0)
+        return groups
+
+
+
+'''
+    @classmethod
+    async def _save_game_state(cls, game):
+        """
+        保存游戏状态（如果需要）
+        """
+        if game.game_state == "playing":
+            # 保存当前游戏进度
+            save_data = {
+                'players': game.players,
+                'hands': game.hands,
+                'dizhu': game.dizhu,
+                'last_played': game.last_played,
+                'played_cards': game.played_cards,
+                'timestamp': int(time.time())
+            }
+            # 这里可以保存到数据库或文件
+            # db.save_game(save_data)
+            pass
+'''
 
 
 
