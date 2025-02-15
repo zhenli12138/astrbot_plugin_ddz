@@ -10,6 +10,7 @@ import random
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 import time
 from collections import defaultdict
+import json
 '''
 players: 玩家列表。
 
@@ -35,22 +36,39 @@ class Poker:
     colors = {'♠': (0, 0, 0), '♥': (255, 0, 0),
               '♦': (255, 0, 0), '♣': (0, 0, 0)}
 
-@register("astrbot_plugin_ddz", "达莉娅", "ddz", "v0.1.0")
+@register("astrbot_plugin_ddz", "达莉娅", "ddz", "v1.1.0")
 class MyPlugin(Star):
     # 在__init__中会传入Context 对象，这个对象包含了 AstrBot 的大多数组件
     def __init__(self, context: Context, config: dict):
         super().__init__(context)
         self.op = 0
-        self.waiting_rooms = {}  # {creator_id: room_id}
-        self.played_cards = []   # played_cards: 已经出过的牌。
-        self.rankings = {}
-
         self.counter = 0
         self.config = config
         self.enabled = True                     # 初始化插件开关为关闭状态
 
         self.rooms = {}  # {room_id: game}
         self.player_rooms = {}  # {player_id: room_id}
+        file_path = './data/plugins/astrbot_plugin_ddz/data.jsonl'
+        if not os.path.exists(file_path):
+            self.save_game()
+            print(f"文件 {file_path} 不存在，已创建并初始化。")
+        else:
+            print(f"文件 {file_path} 已存在，跳过创建。")
+        self.load_game()
+
+    def load_game(self):
+        dicts = []
+        with open('./data/plugins/astrbot_plugin_ddz/data.json', 'r') as f:
+            for line in f:
+                dicts.append(json.loads(line.strip()))
+        # 分配到各自的字典
+        self.rooms = dicts[0]
+        self.player_rooms = dicts[1]
+
+    def save_game(self):
+        with open('./data/plugins/astrbot_plugin_ddz/data.json', 'w') as f:
+            for d in [self.rooms, self.player_rooms]:
+                f.write(json.dumps(d) + '\n')
     @filter.command("斗地主")
     @event_message_type(EventMessageType.GROUP_MESSAGE)
     async def ddz_menu(self, event: AstrMessageEvent):
@@ -376,7 +394,9 @@ class MyPlugin(Star):
             yield event.plain_result("出牌无效！请检查牌型或是否拥有这些牌")
             return
         # 获取牌型信息
+        logger.warning(parsed_cards)
         play_type = self.validate_type(parsed_cards)
+        logger.warning(play_type)
         if not play_type[0]:
             yield event.plain_result("不合法的牌型！")
             return
@@ -384,22 +404,27 @@ class MyPlugin(Star):
         # 验证是否符合出牌规则
         if self.rooms[room_id]['game']['last_played']:
             # 需要跟牌的情况
-            if len(parsed_cards) != len(self.rooms[room_id]['game']['last_played']['cards']):
-                yield event.plain_result("出牌数量不一致！")
-                return
-            if not self.compare_plays(self.rooms[room_id]['game']['last_played']['type'], play_type):
-                yield event.plain_result("出牌不够大！")
-                return
-        else:
-            # 首出需要合法牌型
-            if play_type[0] is None:
-                yield event.plain_result("首出必须使用合法牌型！")
-                return
+            if play_type[0] in ['rocket']:
+                yield event.plain_result("火箭发射！")
+            elif play_type[0] in ['bomb']:
+                if self.rooms[room_id]['game']['last_played']['type'][0] not in ['rocket']:
+                    yield event.plain_result("出牌不够大！")
+                    return
+                else:
+                    if not self.compare_plays(self.rooms[room_id]['game']['last_played']['type'], play_type):
+                        yield event.plain_result("出牌不够大！")
+                        return
+            else:
+                if len(parsed_cards) != len(self.rooms[room_id]['game']['last_played']['cards']):
+                    yield event.plain_result("出牌数量不一致！")
+                    return
+                if not self.compare_plays(self.rooms[room_id]['game']['last_played']['type'], play_type):
+                    yield event.plain_result("出牌不够大！")
+                    return
 
         # 执行出牌
         for c in parsed_cards:
             self.rooms[room_id]['game']['hands'][user_id].remove(c)
-        # self.played_cards.extend(parsed_cards)
         self.rooms[room_id]['game']['last_played'] = {
             'player': user_id,
             'cards': parsed_cards,
@@ -421,12 +446,12 @@ class MyPlugin(Star):
                 result = "农民获胜！"
                 winners = [p for p in players if p != self.rooms[room_id]['game']['dizhu']]
 
-            # 生成结果图片
-            # ranking_img = ImageGenerator.generate_ranking_image(game.rankings)
-            yield event.plain_result(f"游戏结束！{result}")
-            # await SendTo(game.players, f"[CQ:image,file=base64://{ranking_img}]")
-            # 重置游戏
+            for p in players:
+                self.player_rooms.pop(p, None)
+            self.rooms.pop(room_id, None)
             self.rooms[room_id]['state'] = "ended"
+            yield event.plain_result(f"游戏结束！{result}，房间已解散")
+            # 重置游戏
             return
 
         # 传递出牌权
@@ -436,6 +461,7 @@ class MyPlugin(Star):
             if p != self.rooms[room_id]['game']['current_player'] and len(self.rooms[room_id]['game']['hands'][p]) > 0:
                 self.rooms[room_id]['game']['current_player'] = p
                 break
+        self.save_game()
         chain = [
             Plain("轮到玩家:"),
             At(qq=self.rooms[room_id]['game']['current_player']),  # At 消息发送者
@@ -546,7 +572,7 @@ class MyPlugin(Star):
         d.text((x, 0), text, fill=(0, 0, 0), font=ImageFont.truetype('msyh.ttc', 50))
         for i, card in enumerate(cards):
             if card in ['BJ', 'RJ']:
-                color = (0, 0, 0) if card == 'BJ' else (255, 0, 0)
+                color = (255, 0, 0) if card == 'BJ' else (0, 0, 0)
                 card_img = Image.new('RGB', (card_width, card_height), (255, 255, 255))
                 d = ImageDraw.Draw(card_img)
                 x, y = 10, 0
@@ -555,7 +581,7 @@ class MyPlugin(Star):
                     bbox = d.textbbox((x, y), char, font=ImageFont.truetype('msyh.ttc', 20))
                     char_width, char_height = bbox[2] - bbox[0], bbox[3] - bbox[1]
                     # 绘制字符
-                    d.text((x, y), char, fill=(0, 0, 0), font=ImageFont.truetype('msyh.ttc', 20))
+                    d.text((x, y), char, fill=color, font=ImageFont.truetype('msyh.ttc', 20))
                     # 调整 y 坐标
                     y += char_height + 5
             else:
@@ -573,11 +599,6 @@ class MyPlugin(Star):
         output_path = f"./data/plugins/astrbot_plugin_ddz/pic{idx}.png"
         img.save(output_path, format='PNG')
         return output_path
-
-    # ========== 牌型验证模块 ==========
-    def validate_play(last_cards, new_cards):
-        # 实现完整的牌型验证和比较逻辑
-        pass
 
     # ========== 游戏控制模块 ==========
 
@@ -615,7 +636,9 @@ class MyPlugin(Star):
         values = [self.card_value(c) for c in cards]
         values.sort()
         count = len(values)
-
+        value_counts = defaultdict(int)
+        for v in values:
+            value_counts[v] += 1
         # 火箭
         if set(cards) == {'BJ', 'RJ'}:
             return ('rocket', 17)
@@ -643,29 +666,25 @@ class MyPlugin(Star):
                 counter[v] += 1
             if sorted(counter.values()) == [1, 3]:
                 return ('triple_plus_single', max(k for k, v in counter.items() if v == 3))
-            if sorted(counter.values()) == [2, 3]:
-                return ('triple_plus_pair', max(k for k, v in counter.items() if v == 3))
 
         # 单顺（至少5张）
         if count >= 5 and all(values[i] == values[i - 1] + 1 for i in range(1, count)):
             if max(values) < 15:  # 2不能出现在顺子中
                 return ('straight', max(values))
 
+        if count == 5:  # 三带一对的情况
+            triples = [v for v, cnt in value_counts.items() if cnt == 3]
+            pairs = [v for v, cnt in value_counts.items() if cnt == 2]
+            if len(triples) == 1 and len(pairs) == 1:
+                return ('triple_plus_pair', triples[0])
+
         # 双顺（至少3对）
         if count >= 6 and count % 2 == 0:
             pairs = [values[i] for i in range(0, count, 2)]
-            if all(pairs[i] == pairs[i - 1] for i in range(1, len(pairs))) and \
+            if all(pairs[i] == values[2 * i + 1] for i in range(len(pairs))) and \
                     all(pairs[i] == pairs[i - 1] + 1 for i in range(1, len(pairs))) and \
                     max(pairs) < 15:
                 return ('double_straight', max(pairs))
-
-        # 飞机（至少2组三张）
-        if count >= 6 and count % 3 == 0:
-            triples = [values[i] for i in range(0, count, 3)]
-            if all(triples[i] == triples[i - 1] for i in range(1, len(triples))) and \
-                    all(triples[i] == triples[i - 1] + 1 for i in range(1, len(triples))) and \
-                    max(triples) < 15:
-                return ('airplane', max(triples))
 
         # 四带二
         if count == 6:
@@ -675,6 +694,77 @@ class MyPlugin(Star):
             if 4 in counter.values():
                 quad_value = max(k for k, v in counter.items() if v == 4)
                 return ('quad_plus_two', quad_value)
+
+        # 飞机（至少2组三张）
+        if count >= 6 and count % 3 == 0:
+            triples = [values[i] for i in range(0, count, 3)]
+            if all(triples[i] == triples[i - 1] for i in range(1, len(triples))) and \
+                    all(triples[i] == triples[i - 1] + 1 for i in range(1, len(triples))) and \
+                    max(triples) < 15:
+                return ('airplane', max(triples))
+
+        if count >= 6:
+            # 找出所有可能的三张组合
+            triple_values = sorted([v for v, cnt in value_counts.items() if cnt >= 3])
+            # 寻找最长的连续三张序列
+            max_sequence = []
+            current_seq = []
+            for v in triple_values:
+                if not current_seq or v == current_seq[-1] + 1:
+                    current_seq.append(v)
+                else:
+                    if len(current_seq) > len(max_sequence):
+                        max_sequence = current_seq
+                    current_seq = [v]
+                if v >= 15:  # 2和王不能出现在三顺中
+                    current_seq = []
+                    break
+            if len(current_seq) > len(max_sequence):
+                max_sequence = current_seq
+
+            if len(max_sequence) >= 2:
+                # 计算实际使用的三张牌
+                used_triples = []
+                for v in max_sequence:
+                    used_triples.extend([v] * 3)
+
+                # 剩余牌必须是翅膀（单或对）
+                remaining = []
+                for v in values:
+                    if v in max_sequence and used_triples.count(v) > 0:
+                        used_triples.remove(v)
+                    else:
+                        remaining.append(v)
+
+                # 翅膀数量必须等于三顺数量
+                if len(remaining) != len(max_sequence):
+                    return (None, 0)
+
+                # 翅膀类型判断（全单或全对）
+                wing_counts = defaultdict(int)
+                for v in remaining:
+                    wing_counts[v] += 1
+
+                wing_type = None
+                valid = True
+                for v, cnt in wing_counts.items():
+                    if cnt == 1:
+                        if wing_type is None:
+                            wing_type = 'single'
+                        elif wing_type != 'single':
+                            valid = False
+                    elif cnt == 2:
+                        if wing_type is None:
+                            wing_type = 'pair'
+                        elif wing_type != 'pair':
+                            valid = False
+                    else:
+                        valid = False
+                    if not valid:
+                        break
+
+                if valid:
+                    return ('airplane_with_wings', max(max_sequence))
 
         return (None, 0)
 
@@ -758,13 +848,13 @@ class MyPlugin(Star):
                 continue
 
             # 处理特殊牌
-            if char in ('b', 'r') and i + 1 < len(input_str):
+            if char in ('小','大') and i + 1 < len(input_str):
                 next_char = input_str[i + 1].lower()
-                if char == 'b' and next_char == 'j':
+                if char == '大' and next_char == '王':
                     values.append('BJ')
                     i += 2
                     continue
-                if char == 'r' and next_char == 'j':
+                if char == '小' and next_char == '王':
                     values.append('RJ')
                     i += 2
                     continue
@@ -792,27 +882,6 @@ class MyPlugin(Star):
         return groups
 
 
-
-'''
-    @classmethod
-    async def _save_game_state(cls, game):
-        """
-        保存游戏状态（如果需要）
-        """
-        if game.game_state == "playing":
-            # 保存当前游戏进度
-            save_data = {
-                'players': game.players,
-                'hands': game.hands,
-                'dizhu': game.dizhu,
-                'last_played': game.last_played,
-                'played_cards': game.played_cards,
-                'timestamp': int(time.time())
-            }
-            # 这里可以保存到数据库或文件
-            # db.save_game(save_data)
-            pass
-'''
 
 
 
