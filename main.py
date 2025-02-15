@@ -36,14 +36,13 @@ class Poker:
     colors = {'♠': (0, 0, 0), '♥': (255, 0, 0),
               '♦': (255, 0, 0), '♣': (0, 0, 0)}
 
-@register("astrbot_plugin_ddz", "达莉娅", "ddz", "v1.1.0")
+@register("astrbot_plugin_ddz", "达莉娅", "ddz", "v1.2.0")
 class MyPlugin(Star):
     # 在__init__中会传入Context 对象，这个对象包含了 AstrBot 的大多数组件
-    def __init__(self, context: Context, config: dict):
+    def __init__(self, context: Context):
         super().__init__(context)
         self.op = 0
         self.counter = 0
-        self.config = config
         self.enabled = True                     # 初始化插件开关为关闭状态
 
         self.rooms = {}  # {room_id: game}
@@ -58,15 +57,20 @@ class MyPlugin(Star):
 
     def load_game(self):
         dicts = []
-        with open('./data/plugins/astrbot_plugin_ddz/data.json', 'r') as f:
+        with open('./data/plugins/astrbot_plugin_ddz/data.jsonl', 'r') as f:
             for line in f:
                 dicts.append(json.loads(line.strip()))
         # 分配到各自的字典
-        self.rooms = dicts[0]
-        self.player_rooms = dicts[1]
+        if not dicts:  # 如果 dicts 为空
+            logger.warning("加载的数据为空")
+            return
+        else:
+            self.rooms = dicts[0]
+            self.player_rooms = dicts[1]
+            return
 
     def save_game(self):
-        with open('./data/plugins/astrbot_plugin_ddz/data.json', 'w') as f:
+        with open('./data/plugins/astrbot_plugin_ddz/data.jsonl', 'w') as f:
             for d in [self.rooms, self.player_rooms]:
                 f.write(json.dumps(d) + '\n')
     @filter.command("斗地主")
@@ -135,6 +139,7 @@ class MyPlugin(Star):
             yield event.plain_result(f"房间 {room_id} 已存在！")
             return
         room_id = self.create_room(user_id,event)
+        self.save_game()
         yield event.plain_result(f"房间创建成功！房间号：{room_id}\n等待其他玩家加入...")
 
     def create_room(self, creator,event: AstrMessageEvent):
@@ -146,7 +151,7 @@ class MyPlugin(Star):
                      'dipai':[],
                      'deck':[],
                      'hands':{},
-                     'bid_count':int,
+                     'bid_count':'',
                      'dizhu':'',
                      'current_robber':'',
                      'current_bidder':'',
@@ -197,7 +202,7 @@ class MyPlugin(Star):
             yield event.plain_result(f"发牌结束，请私聊bot【/查看手牌】看牌！")
             self.rooms[room_id]['state'] = "叫地主阶段"
             logger.info(self.rooms[room_id]['state'])
-            self.rooms[room_id]['game']['bid_count'] = 1
+            self.rooms[room_id]['game']['bid_count'] = '1'
             self.rooms[room_id]['game']['current_bidder'] = random.choice(players)
             chain = [
                 Plain("叫地主开始！当前叫牌玩家："),
@@ -264,14 +269,14 @@ class MyPlugin(Star):
             yield event.chain_result(chain)
             return
         elif user_id == self.rooms[room_id]['game']['current_robber']:
-            self.rooms[room_id]['game']['bid_count'] += 1
+            self.rooms[room_id]['game']['bid_count'] = str(int(self.rooms[room_id]['game']['bid_count']) + 1)
             self.op =1
             chain = [
                 Plain("您选择不抢地主"),
                 At(qq=self.rooms[room_id]['game']['current_bidder']),  # At 消息发送者
             ]
             yield event.chain_result(chain)
-            if self.rooms[room_id]['game']['bid_count'] == 3:
+            if self.rooms[room_id]['game']['bid_count'] == '3':
                 self.rooms[room_id]['game']['dizhu'] = self.rooms[room_id]['game']['current_bidder']
                 self.rooms[room_id]['game']['hands'][self.rooms[room_id]['game']['dizhu']].extend(self.rooms[room_id]['game']['dipai'])
                 self.rooms[room_id]['game']['hands'][self.rooms[room_id]['game']['dizhu']].sort(key=lambda x: self.card_value(x))
@@ -323,14 +328,14 @@ class MyPlugin(Star):
             yield event.chain_result(chain)
             return
         elif user_id == self.rooms[room_id]['game']['current_robber']:
-            self.rooms[room_id]['game']['bid_count'] += 1
+            self.rooms[room_id]['game']['bid_count'] = str(int(self.rooms[room_id]['game']['bid_count']) + 1)
             self.rooms[room_id]['game']['current_bidder'] = self.rooms[room_id]['game']['current_robber']
             chain = [
                 Plain("您已抢地主，当前地主玩家为"),
                 At(qq=self.rooms[room_id]['game']['current_bidder']),  # At 消息发送者
             ]
             yield event.chain_result(chain)
-            if self.rooms[room_id]['game']['bid_count'] == 3:
+            if self.rooms[room_id]['game']['bid_count'] == '3':
                 self.rooms[room_id]['game']['dizhu'] = self.rooms[room_id]['game']['current_bidder']
                 self.rooms[room_id]['game']['hands'][self.rooms[room_id]['game']['dizhu']].extend(self.rooms[room_id]['game']['dipai'])
                 self.rooms[room_id]['game']['hands'][self.rooms[room_id]['game']['dizhu']].sort(key=lambda x: self.card_value(x))

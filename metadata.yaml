@@ -1,6 +1,6 @@
 name: astrbot_plugin_ddz
 desc: 斗地主游戏
 help: 输入 /斗地主 查看菜单。
-version: v1.1.0
+version: v1.2.0
 author: 达莉娅
 repo: https://github.com/zhenli12138/astrbot_plugin_ddz
