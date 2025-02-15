@@ -36,17 +36,19 @@ class Poker:
     colors = {'♠': (0, 0, 0), '♥': (255, 0, 0),
               '♦': (255, 0, 0), '♣': (0, 0, 0)}
 
-@register("astrbot_plugin_ddz", "达莉娅", "ddz", "v1.2.0")
+@register("astrbot_plugin_ddz", "达莉娅", "ddz", "v1.3.0")
 class MyPlugin(Star):
     # 在__init__中会传入Context 对象，这个对象包含了 AstrBot 的大多数组件
     def __init__(self, context: Context):
         super().__init__(context)
+        self.event = None
         self.op = 0
         self.counter = 0
         self.enabled = True                     # 初始化插件开关为关闭状态
 
         self.rooms = {}  # {room_id: game}
         self.player_rooms = {}  # {player_id: room_id}
+        self.call = {}
         file_path = './data/plugins/astrbot_plugin_ddz/data.jsonl'
         if not os.path.exists(file_path):
             self.save_game()
@@ -67,6 +69,9 @@ class MyPlugin(Star):
         else:
             self.rooms = dicts[0]
             self.player_rooms = dicts[1]
+            room_ids = list(self.rooms.keys())
+            for room_id in room_ids:
+                self.call[room_id] = {'event': {}}
             return
 
     def save_game(self):
@@ -78,6 +83,19 @@ class MyPlugin(Star):
     async def ddz_menu(self, event: AstrMessageEvent):
         img = self.generate_menu()
         yield event.make_result().message("斗地主游戏菜单：").file_image(img)
+
+    @filter.command("解散房间")
+    @event_message_type(EventMessageType.GROUP_MESSAGE)
+    async def exit_game(self,event: AstrMessageEvent):
+        user_id = event.get_sender_id()
+        group_id = event.get_group_id()
+        room_id = group_id
+        players = self.rooms[room_id]['players']
+        for p in players:
+            self.player_rooms.pop(p, None)
+        self.rooms.pop(room_id, None)
+        self.save_game()
+        yield event.plain_result(f"已解散房间，游戏结束！")
 
     @filter.command("退出游戏")
     @event_message_type(EventMessageType.GROUP_MESSAGE)
@@ -105,6 +123,7 @@ class MyPlugin(Star):
             for p in players:
                 self.player_rooms.pop(p, None)
             self.rooms.pop(room_id, None)
+            self.save_game()
             yield event.plain_result(f"{exit_type}已解散房间，游戏结束！")
             return
         else:
@@ -118,6 +137,7 @@ class MyPlugin(Star):
             self.player_rooms.pop(user_id)
             if user_id in self.rooms[room_id]['game']['hands']:
                 self.rooms[room_id]['game']['hands'].pop(user_id)
+            self.save_game()
             yield event.plain_result(f"玩家 {user_id} 已退出房间")
             yield event.plain_result(f"当前人数：{len(self.rooms[room_id]['players'])}")
             # 如果房间为空，清理房间
@@ -155,9 +175,11 @@ class MyPlugin(Star):
                      'dizhu':'',
                      'current_robber':'',
                      'current_bidder':'',
-                     'last_played':{},},
+                     'last_played':{},
+                     },
             'state': 'waiting'
         }
+        self.call[room_id]={'event':{}}
         return room_id
 
     @filter.command("加入房间")
@@ -247,6 +269,7 @@ class MyPlugin(Star):
             return
         players = self.rooms[room_id]['players']
         if user_id in players:
+            self.call[room_id]['event'] = {user_id: event}
             idx = players.index(user_id)
             hand_img = self.generate_hand_image(self.rooms[room_id]['game']['hands'][user_id],idx)
             message_chain = MessageChain().message("您的手牌为：").file_image(hand_img)
@@ -412,7 +435,7 @@ class MyPlugin(Star):
             if play_type[0] in ['rocket']:
                 yield event.plain_result("火箭发射！")
             elif play_type[0] in ['bomb']:
-                if self.rooms[room_id]['game']['last_played']['type'][0] not in ['rocket']:
+                if self.rooms[room_id]['game']['last_played']['type'][0] in ['rocket']:
                     yield event.plain_result("出牌不够大！")
                     return
                 else:
@@ -439,7 +462,11 @@ class MyPlugin(Star):
         # 更新游戏状态
         yield event.plain_result(f"{user_id} 出牌：{' '.join(parsed_cards)}")
         idx = players.index(self.rooms[room_id]['game']['current_player'])
-        hand_img = self.generate_hand_image(self.rooms[room_id]['game']['hands'][user_id],idx)
+        hand_img = self.generate_hand_image(self.rooms[room_id]['game']['hands'][user_id], idx)
+        message_chain = MessageChain().message("您的手牌为：").file_image(hand_img)
+        logger.info(self.rooms[room_id]['game']['hands'][user_id])
+        self.event = self.call[room_id]['event'][user_id]
+        await self.event.send(message_chain)
 
         # 检查是否获胜
         if not self.rooms[room_id]['game']['hands'][user_id]:
@@ -550,7 +577,8 @@ class MyPlugin(Star):
             "/出牌 [牌组]",
             "/pass（不出牌）",
             "/查看手牌（私聊指令，要看的时候发指令刷新图片）",
-            "/退出游戏"
+            "/退出游戏",
+            "/解散房间（强制结束游戏）"
         ]
         y = 50
         for line in menu:
